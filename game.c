@@ -24,6 +24,8 @@
 #include "raylib.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
+#include <stdlib.h>
 //------------------------------------------------------------------------------------
 // * utility functions *
 //------------------------------------------------------------------------------------
@@ -38,9 +40,41 @@ float lerp(float a, float b, float w){
     return ((a - b) * w) + a;
 }
 
+int min(int a, int b){
+    if (a < b){
+        return a;
+    }
+    return b;
+}
+
+
+//-------------------------------------------------------------------
+// * random vars *
+//-------------------------------------------------------------------
+
+const int screenWidth = 450;
+const int screenHeight = 700;
+const int windowWidth = 1280;
+const int windowHeight = 720;
+const float screenZoom = 2.0f;
+const int inGameWidth = (int)(screenWidth / screenZoom);
+const int inGameHeight = (int)(screenHeight / screenZoom);
+int playerX = 0;
+int playerY = 0;
+int playerLevel = 1;
+float backgroundSpeed = 0.0f;
+int killedThisLife = 0;
+const float MAX_BACKGROUND_SPEED = 1.5f;
+int movedBackgrounds = 0;
+int currentBackground = 0;
+
+
+
 //------------------------------------------------------------------------------------
 // * Sprite loading *
 //------------------------------------------------------------------------------------
+
+
 
 Texture2D lampir;
 Texture2D samuel;
@@ -49,9 +83,23 @@ Texture2D playerLeft;
 Texture2D playerRight;
 Texture2D bullet;
 Texture2D powSprite;
+Texture2D mudBackground;
+Texture2D sandBackground;
+Texture2D grassBackground;
+
+Sound shootPlayerSound;
+Sound enemyHitSound;
+Sound explosionSound;
+Sound enemyShootSound;
+Sound bonusSound;
+Sound gameOverSound;
+Music music;
+
 int playerLives = 3;
 #define EXPLOSION_COUNT 7
 Texture2D explosionSprites[EXPLOSION_COUNT];
+Texture2D enemyBullet;
+RenderTexture2D renderTexture;
 
 void loadSprites(){
     lampir = LoadTexture("sprites/lampir.png");
@@ -68,6 +116,22 @@ void loadSprites(){
     explosionSprites[4] = LoadTexture("sprites/sprite_0.png");
     explosionSprites[5] = LoadTexture("sprites/sprite_1.png");
     explosionSprites[6] = LoadTexture("sprites/sprite_2.png");
+    mudBackground = LoadTexture("sprites/mudBack.png");
+    sandBackground = LoadTexture("sprites/sandBack.png");
+    grassBackground = LoadTexture("sprites/grassBack.png");
+    enemyBullet = LoadTexture("sprites/enemy_bullet.png");
+    
+    // render texture
+    renderTexture = LoadRenderTexture(screenWidth, screenHeight);
+    
+    // sounds
+    shootPlayerSound = LoadSound("sounds/laser.wav");
+    enemyHitSound = LoadSound("");
+    explosionSound = LoadSound("sounds/explosion.wav");
+    enemyShootSound = LoadSound("");
+    bonusSound = LoadSound("sounds/bonus.wav");
+    gameOverSound = LoadSound("sounds/gameOver.wav");
+    music = LoadMusicStream("sounds/hudba.mp3");
 }
 
 void unloadSprites(){
@@ -78,20 +142,28 @@ void unloadSprites(){
     UnloadTexture(playerRight);
     UnloadTexture(bullet);
     UnloadTexture(powSprite);
+    for (int i = 0; i < EXPLOSION_COUNT; i++){
+        UnloadTexture(explosionSprites[i]);
+    }
+    UnloadTexture(mudBackground);
+    UnloadTexture(grassBackground);
+    UnloadTexture(sandBackground);
+    UnloadTexture(enemyBullet);
+    
+    // sounds
+    UnloadSound(shootPlayerSound);
+    UnloadSound(enemyHitSound);
+    UnloadSound(explosionSound);
+    UnloadSound(enemyShootSound);
+    UnloadSound(bonusSound);
+    UnloadSound(gameOverSound);
+    UnloadMusicStream(music);
+    
+    // render texture
+    UnloadRenderTexture(renderTexture);
 }
 
 
-//-------------------------------------------------------------------
-// * screen vars *
-//-------------------------------------------------------------------
-
-const int screenWidth = 450;
-const int screenHeight = 800;
-const float screenZoom = 2.0f;
-const int inGameWidth = (int)(screenWidth / screenZoom);
-const int inGameHeight = (int)(screenHeight / screenZoom);
-int playerX = 0;
-int playerY = 0;
 
 //-------------------------------------------------------------------
 // * objects *
@@ -109,6 +181,8 @@ struct Object{
     int variable1;
     int variable2;
     int variable3;
+    int enemyType;
+    int ai;
 };
 
 struct Object initDefaultObject(){
@@ -126,20 +200,23 @@ struct Object initDefaultObject(){
     obj.variable1 = 0;
     obj.variable2 = 0;
     obj.variable3 = 0;
+    obj.enemyType = 0;
+    obj.ai = 0;
     
     return obj;
 }
 
-#define MAX_OBJECTS 150
+#define MAX_OBJECTS 250
 struct Object objects[MAX_OBJECTS];
-const int TEAM_PLAYER = 0;
-const int TEAM_ENEMIES = 1;
-const int TEAM_PARTICLE = 2;
+#define TEAM_PLAYER 0
+#define TEAM_ENEMIES 1
+#define TEAM_PARTICLE 2
 
-const int TYPE_BULLET = 0;
-const int ENEMY_SAMUEL = 1;
-const int POW_PARTICLE = 2;
-const int EXPLOSION_PARTICLE = 3;
+#define TYPE_BULLET 0
+#define ENEMY_SAMUEL 1
+#define POW_PARTICLE 2
+#define EXPLOSION_PARTICLE 3
+#define ENEMY_LAMPIR 4
 
 void updateObjects(){
     for (int i = 0; i < MAX_OBJECTS; i++){
@@ -159,6 +236,7 @@ void updateObjects(){
                 case EXPLOSION_PARTICLE:
                     updateExplosion(obj);
                     break;
+                
             }
             
             
@@ -183,9 +261,14 @@ void updateObjects(){
 
 int nextObjectIndex = 0;
 void addObject(struct Object obj){
+    int i = 0;
+    while(objects[nextObjectIndex].exists || i > MAX_OBJECTS){
+        nextObjectIndex++;
+        nextObjectIndex %= MAX_OBJECTS;
+        i++;
+    }
     objects[nextObjectIndex] = obj;
-    nextObjectIndex++;
-    nextObjectIndex %= MAX_OBJECTS;
+    
 }
 
 //-------------------------------------------------------------------
@@ -194,6 +277,8 @@ void addObject(struct Object obj){
 void updateExplosion(struct Object* this){
     this->internalTimer--;
     Texture2D* spr = &explosionSprites[(int)floor((21 - this->internalTimer) / 3)];
+    this->y += backgroundSpeed / 4;
+
     if (this->internalTimer == 0){
         this->exists = false;
     }
@@ -206,9 +291,10 @@ void updateExplosion(struct Object* this){
 
 struct Object initExplosion(int x, int y){
     struct Object out = initDefaultObject();
-    
+    PlaySound(explosionSound);
     out.x = x;
     out.y = y;
+    
     out.team = TEAM_PARTICLE;
     out.internalTimer = 21;
     out.type = EXPLOSION_PARTICLE;
@@ -235,6 +321,7 @@ struct Object initPow(int x, int y){
 void updatePow(struct Object* this){
     this->internalTimer--;
     
+    this->y += backgroundSpeed / 4;
     if (this->internalTimer == 0){
         this->exists = false;
     }
@@ -255,11 +342,14 @@ void updateBullet(struct Object* this){
     
     if (this->y <= 0){
         this->exists = false;
-        addObject(initPow(this->x, this->y));
     }
     
     // draw
-    DrawTexture(bullet, this->x, this->y, WHITE);
+    if (this->team == TEAM_PLAYER){
+        DrawTexture(bullet, this->x, this->y, WHITE);
+    }else {
+        DrawTexture(enemyBullet, this->x, this->y, WHITE);
+    }
 }
 
 struct Object initBullet(int x, int y, int team){
@@ -277,10 +367,10 @@ struct Object initBullet(int x, int y, int team){
 }
 
 void bulletCollide(struct Object* this, struct Object* other){
-    if (other->team == TEAM_ENEMIES){
+    if (other->team == TEAM_ENEMIES && this->team == TEAM_PLAYER && other->type != TYPE_BULLET){
         this->exists = false;
         other->health -= 10;
-        addObject(initPow(this->x, this->y));
+        addObject(initPow(this->x, this->y - 10));
         other->variable3 = 5;
     }
 }
@@ -288,20 +378,29 @@ void bulletCollide(struct Object* this, struct Object* other){
 //-------------------------------------------------------------------
 // * enemies *
 //-------------------------------------------------------------------
-struct Object initEnemy(int x , int enemyType){
+
+
+struct Object initEnemy(int x , int enemyType, int aiType, float healthMultiplier){
     struct Object output = initDefaultObject();
     
     output.x = x;
     output.y = -64;
-    output.type = enemyType;
+    output.type = ENEMY_SAMUEL;
     output.team = TEAM_ENEMIES;
     output.exists = true;
+    output.enemyType = enemyType;
+    output.ai = aiType;
     
     switch (enemyType){
         case ENEMY_SAMUEL:
             output.width = 25;
             output.height = 40;
-            output.health = 120;
+            output.health = (int)(120 * healthMultiplier);
+            break;
+        case ENEMY_LAMPIR:
+            output.width = 30;
+            output.height = 49;
+            output.health = (int)(300 * healthMultiplier);
             break;
     }
     
@@ -312,29 +411,57 @@ struct Object initEnemy(int x , int enemyType){
 // * samuel *
 //-------------------------------------------------------------------
 int enemiesKilled = 0;
+
+const int AI_DEFAULT = 0;
+const int AI_DIVE = 1;
+const int AI_SHOOT = 2;
+const int AI_SHOOT_DIVE = 3;
+const int AI_SNIPER = 4;
 void updateSamuel(struct Object* this){
-    this->y += 1;
+    bool isLampir = this->enemyType == ENEMY_LAMPIR;
+    
     
     // smrt
-    if (this->y >= inGameHeight || this->health <= 0){
+    if (this->health <= 0){
         this->exists = false;
-        addObject(initExplosion(this->x, this->y));
+        if (!isLampir){
+            addObject(initExplosion(this->x, this->y));
+        }else {
+            initBigExplosion(this->x, this->y);
+        }
         killedEnemy();
+    }else if (this->y > inGameHeight){
+        this->exists = false;
+    }
+    if (this->y < 100 || this->ai != AI_SNIPER){
+        this->y += 1;
     }
     
-    if (this->y % 80 == 0 && GetRandomValue(0, 9) <= 7){
+    if ((this->ai == AI_DIVE || this->ai == AI_SHOOT_DIVE) && this->y > 120){
+        this->y += 2;
+    }
+        
+    if (this->ai == AI_DEFAULT || this->ai == AI_SHOOT || this->ai == AI_SNIPER || this->y < 100){
+        if ((this->y % 80 == 0 && GetRandomValue(0, 9) <= 7) || (this->ai == AI_SNIPER && this->internalTimer % 100 == 0)){
         if (this->x < playerX - 10 || this->x > playerX + 26){
             this->variable1 = (this->x < playerX) * 2 - 1;
         }
         
         this->variable2 = 10;
         
+        }
+
+        if (this->variable1 != 0 && this->y % this->variable2 == 0){
+            this->x += this->variable1;
+            this->variable2 -= this->variable2 > 1;
+        }
+    
+    }
+    this->internalTimer++;
+    if (this->internalTimer % 120 == 0 && (this->ai == AI_SNIPER || this->ai == AI_SHOOT || this->ai == AI_SHOOT_DIVE)){
+        addObject(initBullet(this->x + 6, this->y + 6, TEAM_ENEMIES));
     }
     
-    if (this->variable1 != 0 && this->y % this->variable2 == 0){
-        this->x += this->variable1;
-        this->variable2 -= this->variable2 > 1;
-    }
     
     Color c = WHITE;
     // color
@@ -346,8 +473,15 @@ void updateSamuel(struct Object* this){
         this->variable3--;
     }
     // draw
-    DrawTexture(samuel, this->x, this->y, c);
+    
+    Texture2D* spr = &samuel;
+    if (isLampir){
+        spr = &lampir;
+    }
+    DrawTexture(*spr, this->x, this->y, c);
 }
+
+
 
 
 //-------------------------------------------------------------------
@@ -378,11 +512,11 @@ void updatePlayer(struct Player* data){
     // movement
     if (data->deadTimer == 0){    
         if (data->x > BOUNDRY_WIDTH && IsKeyDown(KEY_LEFT)){
-            data->x -= 1;
+            data->x -= 2;
             movingLeft = true;
         }
         else if (data->x < inGameWidth - BOUNDRY_WIDTH - 16 && IsKeyDown(KEY_RIGHT)){
-            data->x += 1;
+            data->x += 2;
             movingRight = true;
         }
         
@@ -395,11 +529,20 @@ void updatePlayer(struct Player* data){
         
         playerX = data->x;
         playerY = data->y;
-    
+        data->projectileCount = playerLevel;
         // shooting
         if (IsKeyDown(KEY_SPACE) && data->fireCooldown == 0){
-            addObject(initBullet(data->x, data->y, 0));
+            if (data->projectileCount == 1 || data->projectileCount == 3){
+                addObject(initBullet(data->x, data->y, 0));
+            }
+            if (data->projectileCount == 2 || data->projectileCount == 3){
+                addObject(initBullet(data->x - 3, data->y + 2, 0));
+                addObject(initBullet(data->x + 3, data->y + 2, 0));
+                            
+            }
+            
             data->fireCooldown = data->fireRate;
+            PlaySound(shootPlayerSound);
         }
         data->fireCooldown -= data->fireCooldown > 0;
     }
@@ -438,7 +581,7 @@ void updatePlayer(struct Player* data){
     }
     
 }
-int playerLevel = 1;
+
 struct Player initPlayer(){
     struct Player output;
     
@@ -449,9 +592,29 @@ struct Player initPlayer(){
     output.projectileCount = 1;
     output.invinciblity = 180;
     output.deadTimer = 0;
-    
-    
+    playerLevel = 1;
+    killedThisLife = 0;
     return output;
+}
+
+//-------------------------------------------------------------------
+// * big explosion *
+//-------------------------------------------------------------------
+int explosionTimer = 0;
+int explosionX = 0;;
+int explosionY = 0;
+void initBigExplosion(int x, int y){
+    explosionTimer = 45;
+    explosionX = x;
+    explosionY = y;
+}
+
+void updateExplosions(){
+    explosionTimer -= explosionTimer > 0;
+    
+    if (explosionTimer % 3 == 1){
+        addObject(initExplosion(GetRandomValue(-10, 10) + explosionX, GetRandomValue(-10, 10) + explosionY));
+    }
 }
 
 //-------------------------------------------------------------------
@@ -460,7 +623,7 @@ struct Player initPlayer(){
 int upgradeTimer = 0;
 void upgrade(){
     upgradeTimer = 60;
-    
+    PlaySound(bonusSound);
     if (playerLevel < 3){
         playerLevel++;
     }else{
@@ -472,19 +635,35 @@ int enemySpawnTimer = 0;
 void updateEnemyManagement(){
     enemySpawnTimer--;
     if (enemySpawnTimer <= 0){
-        addObject(initEnemy(GetRandomValue(0, inGameWidth), ENEMY_SAMUEL));
-        enemySpawnTimer = 80 + (sin(enemiesKilled) * 40) + (40 * (enemiesKilled < 20)) + (40 * (enemiesKilled < 60)) + (40 * (enemiesKilled < 120));
+        
+        int enemyType = ENEMY_SAMUEL;
+        if (GetRandomValue(0, 100) < min(enemiesKilled, 90)){
+            enemyType = ENEMY_LAMPIR;
+        }
+        
+        int aiType = GetRandomValue(0, (enemiesKilled > 10) + (enemiesKilled > 30) + (enemiesKilled > 40) + (enemiesKilled > 50) + (enemiesKilled > 60));
+        
+        
+        float healthMultiplier = 1.0f;
+        //healthMultiplier += (sin(enemiesKilled) + 1) * 0.2f;
+        
+        addObject(initEnemy(GetRandomValue(0, inGameWidth - 32), enemyType, aiType, healthMultiplier));
+        enemySpawnTimer = 40 + (sin(enemiesKilled) * 10) + (80 * (enemiesKilled < 20)) + (40 * (enemiesKilled < 60)) + (40 * (enemiesKilled < 120));
     }
 }   
 
 void killedEnemy(){
     enemiesKilled++;
-    if (enemiesKilled == 20){
+    killedThisLife++;
+    
+    if ((playerLevel == 1 && killedThisLife % 10 == 0) ||
+        (playerLevel == 2 && killedThisLife % 35 == 0) ||
+        (playerLevel >= 3 && killedThisLife % 90 == 0)){
         upgrade();
-    }else if (enemiesKilled == 40){
-        upgrade();
-    }else if (enemiesKilled % 80 == 0 && playerLives < 3){
-        upgrade();
+    }
+    
+    if (enemiesKilled % 30 == 0){
+        changeBackground();
     }
 }
 
@@ -496,6 +675,15 @@ void reset(){
     enemySpawnTimer = 0;
     enemiesKilled = 0;
     playerLives = 3;
+    playerLevel = 1;
+    killedThisLife = 0;
+    currentBackground = 0;
+    movedBackgrounds = 0;
+    backgroundSpeed = 0;
+    
+    for (int i = 0; i < MAX_OBJECTS; i++){
+        objects[i].exists = false;
+    }
 }
 
 void gameOver(){
@@ -507,6 +695,11 @@ void gameOver(){
     }
 }
 
+
+//-------------------------------------------------------------------
+// * hud *
+//-------------------------------------------------------------------
+
 #define ONE 2
 #define SCORE_COUNTER_SIZE 10
 
@@ -514,18 +707,64 @@ void drawHud(){
     
     const char* str = "ZIVOTY : ";
     const char num[ONE];
-    //const char scoreCounter[SCORE_COUNTER_SIZE];
+    const char scoreCounter[SCORE_COUNTER_SIZE];
     sprintf(num, "%i", playerLives);
-    //sprintf(scoreCounter, "%i00", enemiesKilled);
+    sprintf(scoreCounter, "%i00", enemiesKilled);
     DrawText( str , 5, 30, 1, WHITE);
     DrawText( num , 60, 30, 1, WHITE);
-    //DrawText( scoreCounter , 180, 30, 1, WHITE);
+    DrawText( scoreCounter , 180, 30, 1, WHITE);
     
     upgradeTimer-= upgradeTimer > 0;
     
     if (upgradeTimer % 8 > 4){
         DrawText("BONUS!", 100, 50, 1, WHITE);
     }
+}
+
+//------------------------------------------------------------------------------------
+// * Background *
+//------------------------------------------------------------------------------------
+float backgroundOffset = 0.0f;
+int fadeTimer = 0;
+void updateBackground(){
+    backgroundSpeed += (backgroundSpeed < (MAX_BACKGROUND_SPEED * movedBackgrounds) + 3.5f) * 0.005f;
+    backgroundOffset += backgroundSpeed;
+    if (backgroundOffset > 400){
+        backgroundOffset -= 400;
+    }
+    Texture2D* spr;
+    switch (currentBackground){
+        case 0: spr = &mudBackground; break;
+        case 1: spr = &grassBackground; break;
+        case 2: spr = &sandBackground; break;
+            
+            
+    }
+    
+    // fading
+    fadeTimer -= fadeTimer > 0;
+    if (fadeTimer == 60){
+        currentBackground++;
+        currentBackground %= 3;
+        movedBackgrounds++;
+    }
+    
+    Color c = WHITE;
+    unsigned char dist = (abs(fadeTimer - 60.0f) / 60.0f) * 255;
+    c.r = dist;
+    c.g = dist;
+    c.b = dist;
+    
+    
+    
+    DrawTexture(*spr, 0, backgroundOffset, c);
+    DrawTexture(*spr, 0, backgroundOffset - 400, c);
+    
+    
+}
+
+void changeBackground(){
+    fadeTimer = 120;
 }
 
 
@@ -541,22 +780,28 @@ int main(void)
     // Initialization
     //--------------------------------------------------------------------------------------
     
-    const Color BACKGROUND_COLOR = {20, 55, 66};
+    const Color BACKGROUND_COLOR = {10, 0, 0};
     struct Player playerObject = initPlayer();
 
-    InitWindow(screenWidth, screenHeight, "Educanet Blaster");
+    InitWindow(windowWidth, windowHeight, "Educanet Blaster");
+    InitAudioDevice();
+    
     loadSprites();
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
+    ToggleFullscreen();
     //--------------------------------------------------------------------------------------
     Camera2D cam = {};
     cam.zoom = screenZoom;
+    float scalingFactor = screenWidth /(float)(GetScreenWidth());
+    int renderTextureOffset = ((GetScreenWidth()) / 2) - (screenWidth / 2);
     
-    
+    PlayMusicStream(music);
     
     
     // Main game loop
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {
+        UpdateMusicStream(music);
         // Update
         //----------------------------------------------------------------------------------
         // TODO: Update your variables here
@@ -564,29 +809,42 @@ int main(void)
 
         // Draw
         //----------------------------------------------------------------------------------
-        BeginDrawing();
-
+        BeginTextureMode(renderTexture);
             BeginMode2D(cam);
             ClearBackground(BACKGROUND_COLOR);
-            
-            
+            updateBackground();
+            updateExplosions();
             if (playerObject.deadTimer == 120){
                 playerObject = initPlayer();
                 playerLives--;
+                if (playerLives == 0){
+                    PlaySound(gameOverSound);
+                }
             }else if (playerLives > 0){
                 updatePlayer(&playerObject);
-                
             }else {
                 gameOver();
             }
-            drawHud();
-            
             updateObjects();
             updateEnemyManagement();
-            DrawTexture(lampir, 100, 100, WHITE);
+            drawHud();
             
-
             EndMode2D();
+        EndTextureMode();
+        BeginDrawing();
+            ClearBackground(BACKGROUND_COLOR);
+            
+            Rectangle r = { 0, 0, (float)(renderTexture.texture.width), (float)(-renderTexture.texture.height) };
+            Rectangle r2 = { renderTextureOffset, 0, (float)(GetScreenWidth()) * scalingFactor, (float)(GetScreenHeight()) };
+            Vector2 v = {0, 0};
+            DrawTexturePro(
+                renderTexture.texture,
+                r,
+                r2,
+                v,
+                0,
+                WHITE);
+        
         EndDrawing();
         //----------------------------------------------------------------------------------
     }
